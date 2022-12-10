@@ -1,5 +1,6 @@
 import 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js';
 import 'https://cdn.jsdelivr.net/npm/mux.js@6.2.0/dist/mux.min.js';
+import { showSaveFilePicker } from 'https://cdn.jsdelivr.net/npm/native-file-system-adapter/mod.js';
 
 const { fetchFile } = FFmpeg;
 
@@ -78,15 +79,13 @@ async function downloadSegment(ffmpeg, url, filename, onDownload) {
 
 // mux.js example
 async function runMuxjs(fragments, config) {
-  const newHandle = await window.showSaveFilePicker({
-    types: [
-      {
-        description: 'Video file',
-        accept: { 'video/mp4': ['.mp4'] },
-      },
-    ],
+  const fileHandle = await showSaveFilePicker({
+    _preferPolyfill: false,
+    suggestedName: 'video.mp4',
+    types: [{ accept: { 'video/mp4': ['.mp4'] } }],
+    excludeAcceptAllOption: false,
   });
-  const writer = await newHandle.createWritable();
+  const writer = await fileHandle.createWritable();
 
   return new Promise((resolve, reject) => {
     let transmuxer = new muxjs.mp4.Transmuxer();
