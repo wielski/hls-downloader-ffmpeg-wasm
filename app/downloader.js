@@ -1,84 +1,17 @@
-import 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js';
 import 'https://cdn.jsdelivr.net/npm/mux.js@6.2.0/dist/mux.min.js';
 import { showSaveFilePicker } from 'https://cdn.jsdelivr.net/npm/native-file-system-adapter/mod.js';
 
-const { fetchFile } = FFmpeg;
+import { getLevelFragments, resolveLevelWithFragments, resolveTrackWithFragments } from './hls.js';
+import { PAT, generatePMT } from './utils.js';
 
-export function downloadHls(ffmpeg, url, config) {
-  return new Promise((resolve, reject) => {
-    const hls = new Hls({
-      debug: true,
-      fLoader: (_context) => {}, // Disable fragment loading
-    });
+export const downloadHls = async (hls, level, audioTrack, config) => {
+  const detailedLevel = await resolveLevelWithFragments(hls, level);
+  const fragments = getLevelFragments(detailedLevel);
+  const detailedAudioTrack = await resolveTrackWithFragments(hls, audioTrack);
+  const audioFragments = getLevelFragments(detailedAudioTrack);
 
-    hls.on(Hls.Events.LEVEL_LOADED, async (_event, level) => {
-      const fragments = await parseFragmentUrls(level);
-      if (!fragments) {
-        reject(new Error('No fragments found'));
-        return;
-      }
+  const duration = detailedLevel.details.totalduration;
 
-      switch (config.type) {
-        case 'ffmpeg':
-          resolve(await runFfmpeg(ffmpeg, fragments, config));
-          break;
-        case 'muxjs':
-          resolve(await runMuxjs(fragments, config));
-          break;
-      }
-    });
-
-    hls.loadSource(url);
-  });
-}
-
-function parseFragmentUrls(level) {
-  return (level.details.fragments || []).map((f) => f.url);
-}
-
-// ffmpeg example
-async function runFfmpeg(ffmpeg, fragments, config) {
-  ffmpeg.setProgress(({ ratio }) => {
-    onProgress(ratio);
-  });
-
-  ffmpeg.setLogger(({ type, message }) => {
-    console.log(type, message);
-  });
-
-  await ffmpeg.load();
-
-  config.onTotalFragments(fragments.length);
-
-  const fragmentDownload = fragments.map((f, i) =>
-    downloadSegment(ffmpeg, f, `${i}.ts`, config.onDownload)
-  );
-  const fragmentFilenames = await Promise.all(fragmentDownload);
-
-  const playlistFragments = fragmentFilenames
-    .map((f) => {
-      return `file '${f}'`;
-    })
-    .join('\n');
-
-  ffmpeg.FS('writeFile', 'fragments.txt', playlistFragments);
-
-  await ffmpeg.run('-f', 'concat', '-safe', '0', '-i', 'fragments.txt', '-c', 'copy', 'output.mp4');
-
-  const data = ffmpeg.FS('readFile', 'output.mp4');
-  return new Blob([data.buffer], { type: 'video/mp4' });
-}
-
-async function downloadSegment(ffmpeg, url, filename, onDownload) {
-  console.log('Downloading segment', url);
-  ffmpeg.FS('writeFile', filename, await fetchFile(url));
-  console.log('Downloading segment', filename);
-  onDownload();
-  return filename;
-}
-
-// mux.js example
-async function runMuxjs(fragments, config) {
   const fileHandle = await showSaveFilePicker({
     _preferPolyfill: false,
     suggestedName: 'video.mp4',
@@ -87,57 +20,88 @@ async function runMuxjs(fragments, config) {
   });
   const writer = await fileHandle.createWritable();
 
+  runMuxjs({
+    writer,
+    fragments,
+    audioFragments,
+    duration,
+    config,
+  });
+};
+
+async function runMuxjs({ writer, fragments, audioFragments, duration, config }) {
+  let transmuxer = new muxjs.mp4.Transmuxer({
+    remux: true,
+    keepOriginalTimestamps: true,
+  });
+
+  config.onTotalFragments(fragments.length);
+
+  const writeData = (data) => {
+    writer.write(data);
+    config.onDownload();
+  };
+
+  await processFragments(transmuxer, duration, fragments, audioFragments, writeData);
+
+  writer.close();
+}
+
+function processFragments(muxer, duration, fragments, audioFragments, write) {
   return new Promise((resolve, reject) => {
-    let transmuxer = new muxjs.mp4.Transmuxer();
-
-    const appendFirstSegment = () => {
-      const segments = [...fragments];
-      config.onTotalFragments(segments.length);
-
-      if (segments.length == 0) {
-        return;
-      }
-
-      transmuxer.on('data', (segment) => {
-        let data = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
-        data.set(segment.initSegment, 0);
-        data.set(segment.data, segment.initSegment.byteLength);
-        writer.write(data);
-        appendNextSegments(segments);
-      });
-
-      fetch(segments.shift())
-        .then((response) => {
-          return response.arrayBuffer();
-        })
-        .then((response) => {
-          transmuxer.push(new Uint8Array(response));
-          transmuxer.flush();
-        });
-    };
-
-    const appendNextSegments = async (segments) => {
+    const appendNextSegments = async (segments, audioSegments) => {
       let segmentsLeft = segments.length;
+      let isFirstSegment = true;
 
-      transmuxer.off('data');
-      transmuxer.on('data', (segment) => {
-        writer.write(new Uint8Array(segment.data));
+      muxer.off('data');
+      muxer.on('data', (segment) => {
+        if (isFirstSegment) {
+          isFirstSegment = false;
+
+          // can we update duration?
+          // const duration = duration / 90000 * track.samplerate;
+          // result[16] = (track.duration >>> 24) & 0xFF;
+          // result[17] = (track.duration >>> 16) & 0xFF;
+          // result[18] = (track.duration >>> 8) & 0xFF;
+          // result[19] = (track.duration) & 0xFF;
+          // segment.initSegment.set([xxxx], 36);
+
+          let data = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
+          data.set(segment.initSegment, 0);
+          data.set(segment.data, segment.initSegment.byteLength);
+          write(data);
+        } else {
+          write(new Uint8Array(segment.data));
+        }
 
         if (segmentsLeft == 0) {
-          writer.close();
           resolve();
         }
       });
 
-      for (const segment of segments) {
+      for (const segmentIndex in segments) {
+        const segment = segments[segmentIndex];
+        const audioSegment = audioSegments[segmentIndex];
+
         segmentsLeft -= 1;
-        const response = await fetch(segment);
-        transmuxer.push(new Uint8Array(await response.arrayBuffer()));
-        transmuxer.flush();
-        config.onDownload();
+
+        // muxer.push(PAT);
+        // muxer.push(
+        //   generatePMT({
+        //     hasVideo: true,
+        //     hasAudio: true,
+        //   })
+        // );
+
+        const [response, audioResponse] = await Promise.all([fetch(segment), fetch(audioSegment)]);
+        muxer.push(new Uint8Array(await audioResponse.arrayBuffer()));
+        muxer.push(new Uint8Array(await response.arrayBuffer()));
+        muxer.flush();
       }
     };
 
-    appendFirstSegment();
+    const segments = [...fragments];
+    const audioSegments = [...audioFragments];
+    appendNextSegments(segments, audioSegments);
   });
 }
