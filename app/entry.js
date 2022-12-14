@@ -60,14 +60,17 @@ function App(props) {
       <input type="text" value=${url} onInput=${(e) => setUrl(e.target.value)} />
       <button onClick=${onLoadLevels}>Download</button>
 
-      <p>
+      ${audioTracks &&
+      html`<p>
         <select onChange=${(e) => setSelectedAudio(audioTracks[e.target.value])}>
           ${audioTracks.map((track, i) => html`<option value=${i}>${track.name}</option>`)}
         </select>
-      </p>
+      </p>`}
+
       <p>
         ${levels.map(
-          (level) => html`<button onClick=${() => onDownload(level)}>${level.height} MP4</button>`
+          (level, index) =>
+            html`<button onClick=${() => onDownload(level)}>${level.height || index} MP4</button>`
         )}
       </p>
 

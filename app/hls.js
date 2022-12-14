@@ -25,7 +25,7 @@ export const resolveLevelWithFragments = (hls, level) => {
     hls.on(Hls.Events.LEVEL_LOADED, (_event, level) => {
       resolve(level);
     });
-    if (hls.currentLevel == level.id) {
+    if (hls.currentLevel == level.id || hls.levels.length === 1) {
       resolve(level);
     }
     hls.loadLevel = level.id;
@@ -38,7 +38,7 @@ export const resolveTrackWithFragments = (hls, track) => {
     hls.on(Hls.Events.AUDIO_TRACK_LOADED, (_event, track) => {
       resolve(track);
     });
-    if (hls.audioTrack == track.id) {
+    if (hls.audioTrack == track.id || hls.audioTracks.length === 1) {
       resolve(track);
     }
     hls.audioTrack = track.id;
